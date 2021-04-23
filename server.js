@@ -111,11 +111,17 @@ async function runSocketServer() {
       }
     });
 
-    socket.on('createConsumerTransport', async (data, callback) => {
+    socket.on('unifiedConsume', async (data, callback) => {
       try {
         const { transport, params } = await createWebRtcTransport();
         consumerTransport = transport;
-        callback(params);
+        consumerTransport.on("icestatechange", async (iceState) => {
+          if (iceState == "connected")
+            await consumer.resume();
+        });
+        const consumed = await createConsumer(producer, data.rtpCapabilities);
+        callback([params, consumed]);
+        await consumerTransport.connect({ dtlsParameters: data.dtlsParameters });
       } catch (err) {
         console.error(err);
         callback({ error: err.message });
@@ -127,11 +133,6 @@ async function runSocketServer() {
       callback();
     });
 
-    socket.on('connectConsumerTransport', async (data, callback) => {
-      await consumerTransport.connect({ dtlsParameters: data.dtlsParameters });
-      callback();
-    });
-
     socket.on('produce', async (data, callback) => {
       const {kind, rtpParameters} = data;
       producer = await producerTransport.produce({ kind, rtpParameters });
@@ -139,15 +140,6 @@ async function runSocketServer() {
 
       // inform clients about new producer
       socket.broadcast.emit('newProducer');
-    });
-
-    socket.on('consume', async (data, callback) => {
-      callback(await createConsumer(producer, data.rtpCapabilities));
-    });
-
-    socket.on('resume', async (data, callback) => {
-      await consumer.resume();
-      callback();
     });
   });
 }

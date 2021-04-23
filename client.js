@@ -183,22 +183,46 @@ async function getUserMedia(transport, isWebcam) {
 }
 
 async function subscribe() {
-  const data = await socket.request('createConsumerTransport', {
-    forceTcp: false,
+  const certificate = await RTCPeerConnection.generateCertificate({
+    name: 'RSASSA-PKCS1-v1_5',
+    hash: 'SHA-256',
+    modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1])
   });
-  if (data.error) {
-    console.error(data.error);
+
+  var dtlsParameters;
+  if (true) {
+    const peer = new RTCPeerConnection({ certificates: [certificate] });
+    await peer.createDataChannel({});
+    const fingerprint = (await peer.createOffer()).sdp.match(/a=fingerprint:([^ ]*) ([:0-9A-Fa-f]*)/);
+    dtlsParameters = { role: 'client', fingerprints: [{ algorithm: fingerprint[1], value: fingerprint[2] }] };
+  } else {
+    dtlsParameters = { role: 'client', fingerprints: certificate.getFingerprints() };
+    dtlsParameters.fingerprints[0].value = dtlsParameters.fingerprints[0].value.toUpperCase();
+  }
+
+  const { rtpCapabilities } = device;
+
+  const [ data0, data1 ] = await socket.request('unifiedConsume', {
+    forceTcp: false,
+    dtlsParameters,
+    rtpCapabilities,
+  });
+  if (data0.error) {
+    console.error(data0.error);
     return;
   }
 
-  const transport = device.createRecvTransport(data);
+  data0['additionalSettings'] = { certificates: [certificate] };
+
+  const transport = device.createRecvTransport(data0);
   transport.on('connect', ({ dtlsParameters }, callback, errback) => {
-    socket.request('connectConsumerTransport', {
-      transportId: transport.id,
-      dtlsParameters
-    })
-      .then(callback)
-      .catch(errback);
+    callback();
+  });
+
+  var ready;
+  const promise = new Promise((resolve, reject) => {
+    ready = resolve;
   });
 
   transport.on('connectionstatechange', async (state) => {
@@ -209,8 +233,7 @@ async function subscribe() {
         break;
 
       case 'connected':
-        document.querySelector('#remote_video').srcObject = await stream;
-        await socket.request('resume');
+        document.querySelector('#remote_video').srcObject = await promise;
         $txtSubscription.innerHTML = 'subscribed';
         $fsSubscribe.disabled = true;
         break;
@@ -225,18 +248,12 @@ async function subscribe() {
     }
   });
 
-  const stream = consume(transport);
-}
-
-async function consume(transport) {
-  const { rtpCapabilities } = device;
-  const data = await socket.request('consume', { rtpCapabilities });
   const {
     producerId,
     id,
     kind,
     rtpParameters,
-  } = data;
+  } = data1;
 
   let codecOptions = {};
   const consumer = await transport.consume({
@@ -248,5 +265,6 @@ async function consume(transport) {
   });
   const stream = new MediaStream();
   stream.addTrack(consumer.track);
+  ready(stream);
   return stream;
 }
